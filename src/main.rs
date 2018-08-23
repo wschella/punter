@@ -1,5 +1,3 @@
-#![feature(transpose_result)]
-
 #[macro_use]
 extern crate failure;
 extern crate dirs;
@@ -8,137 +6,129 @@ extern crate structopt;
 extern crate serde_derive;
 extern crate toml;
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
 use failure::{ensure, Error, Fail};
 use structopt::StructOpt;
+use toml::Value;
 
-/// Manage your dotfiles
-#[derive(Debug, StructOpt)]
-struct CliConfig {
-    #[structopt(subcommand)]
-    command: SubCommand,
+fn main() -> Result<(), Error> {
+  let args = Cli::from_args();
+  let base = args.path.clone().unwrap_or(".".into()); // NLL Clone
+  let config_path = base.join("punter.toml");
+  let config = FileConfig::from_path(&config_path)?;
 
-    /// Punter config location [default: dotter.toml]
-    #[structopt(long = "config", short = "c", parse(from_os_str))]
-    config: Option<PathBuf>,
+  println!("{:?}", &args);
+  println!("{:?}", read_loose(&config_path));
+  println!("{:?}", &config);
 
-    // TODO: Replace with silent option
-    #[structopt(long = "verbosity", short = "v", parse(from_occurrences))]
-    verbosity: u8,
+  let cli_command = args.command.clone(); // NLL CLone;
+  let context = (base, args, config);
+  let command = match cli_command {
+    CliCommand::Sync => SyncCommand::new(context),
+  };
+
+  let actions = command.prepare()?;
+
+  for action in actions {
+    action.execute()?;
+  }
+
+  Ok(())
+}
+
+type Base = PathBuf;
+type Context = (Base, Cli, FileConfig);
+trait Command {
+  type A: Action;
+  fn new(context: Context) -> Self;
+  fn prepare(self) -> Result<Vec<Self::A>, Error>;
+}
+
+struct SyncCommand {
+  context: Context,
+}
+
+impl Command for SyncCommand {
+  type A = SyncAction;
+
+  fn new(context: Context) -> Self {
+    SyncCommand { context }
+  }
+
+  fn prepare(self) -> Result<Vec<SyncAction>, Error> {
+    let (base, cli, config) = self.context;
+    for entry in fs::read_dir(base)? {
+      println!("{:?}", entry?.path());
+    }
+    Ok(vec![])
+  }
+}
+
+trait Action {
+  fn execute(self) -> Result<(), Error>;
+}
+
+struct SyncAction;
+
+impl Action for SyncAction {
+  fn execute(self) -> Result<(), Error> {
+    Ok(())
+  }
+}
+
+#[derive(StructOpt, Debug)]
+struct Cli {
+  #[structopt(subcommand)]
+  command: CliCommand,
+
+  /// Specify path for your dotfiles directory
+  #[structopt(short = "p", long = "path", parse(from_os_str))]
+  path: Option<PathBuf>,
+}
+
+#[derive(Debug, StructOpt, Clone)]
+enum CliCommand {
+  /// Synchronize your dotfiles
+  #[structopt(name = "sync")]
+  Sync,
 }
 
 #[derive(Deserialize, Debug)]
 struct FileConfig {
-    verbosity: Option<u8>,
-    sync: SyncConfig,
+  files: HashMap<String, LinkValue>,
 }
 
-struct Context {
-    verbosity: u8,
-    command: SubCommand,
-    links: Vec<Link>,
-}
-
-struct Link {}
-
-#[derive(Debug, StructOpt)]
-enum SubCommand {
-    /// Synchronize your dotfiles
-    #[structopt(name = "sync")]
-    SyncConfig(SyncConfig),
-}
-
-#[derive(Deserialize, StructOpt, Debug)]
-struct SyncConfig {
-    /// Dotfile source directory [default: .]
-    #[structopt(long = "src", short = "s", parse(from_os_str))]
-    src: Option<PathBuf>,
-
-    /// Dotfile destination directory [default: your home folder]
-    #[structopt(long = "dest", short = "d", parse(from_os_str))]
-    dest: Option<PathBuf>,
-}
-
-struct SyncOp {
-    src: PathBuf,
-    dest: PathBuf,
-}
-
-fn main() -> Result<(), Error> {
-    let cli_args = CliConfig::from_args();
-    let file_args = cli_args
-        .config
-        .clone()
-        .and_then(|p| Some(FileConfig::from_path(p)))
-        .or(FileConfig::default())
-        .transpose()?;
-    let merged_args = merge_args(cli_args, file_args);
-
-    println!("{:?}", merged_args);
-    match merged_args.command {
-        SubCommand::SyncConfig(args) => {
-            let src = args.src.unwrap_or(PathBuf::from("."));
-            let dest = args.dest.or(dirs::home_dir()).ok_or(SyncError::NoDestination)?;
-            ensure!(src.is_dir(), SyncError::SourceNotADirectory(src));
-            ensure!(dest.is_dir(), SyncError::DestinationNotADirectory(dest));
-
-            sync(SyncOp { src, dest })
-        }
-    }
-}
-
-fn merge_args<'a>(mut cli_config: CliConfig, mut file_config_o: Option<FileConfig>) -> CliConfig {
-    if file_config_o.is_none() {
-        return cli_config;
-    }
-    let mut file_config = file_config_o.unwrap();
-
-    cli_config.verbosity = 0;
-    file_config.verbosity = Some(0);
-    cli_config
+#[derive(Deserialize, Debug)]
+#[serde(untagged)]
+enum LinkValue {
+  Simple(String),
 }
 
 impl FileConfig {
-    pub fn from_path(path: PathBuf) -> Result<FileConfig, Error> {
-        ensure!(path.is_file(), SyncError::InvalidConfigPath(path));
-        let content = fs::read_to_string(path)?;
-        let toml = toml::from_str(&content).map_err(|e| SyncError::InvalidConfig(e))?;
-        Ok(toml)
-    }
-
-    pub fn default() -> Option<Result<FileConfig, Error>> {
-        let path = PathBuf::from("punter.toml");
-        if path.is_file() {
-            Some(FileConfig::from_path(path))
-        } else {
-            None
-        }
-    }
+  pub fn from_path<P>(path: P) -> Result<Self, Error>
+  where
+    P: Into<PathBuf>,
+  {
+    let content = fs::read_to_string(path.into())?;
+    let toml = toml::from_str(&content).map_err(|e| FileConfigError::InvalidConfig(e))?;
+    Ok(toml)
+  }
 }
 
-fn sync(op: SyncOp) -> Result<(), Error> {
-    for entry in fs::read_dir(op.src)? {
-        println!("{:?}", entry?.path());
-    }
-    Ok(())
+fn read_loose<P>(path: P) -> Result<Value, Error>
+where
+  P: Into<PathBuf>,
+{
+  let content = fs::read_to_string(path.into())?;
+  let val = content.parse::<Value>()?;
+  Ok(val)
 }
 
-#[derive(Debug, Fail)]
-enum SyncError {
-    #[fail(display = "Home folder could not be found and no destination given")]
-    NoDestination,
-
-    #[fail(display = "Source with path {:?} is not a directory", _0)]
-    SourceNotADirectory(PathBuf),
-
-    #[fail(display = "Destination with path {:?} is not a directory", _0)]
-    DestinationNotADirectory(PathBuf),
-
-    #[fail(display = "Invalid config path {:?}", _0)]
-    InvalidConfigPath(PathBuf),
-
-    #[fail(display = "Invalid config: ")]
-    InvalidConfig(toml::de::Error),
+#[derive(Fail, Debug)]
+enum FileConfigError {
+  #[fail(display = "Invalid config: {:?}", _0)]
+  InvalidConfig(toml::de::Error),
 }

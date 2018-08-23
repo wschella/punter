@@ -1,8 +1,0 @@
-verbosity = "silent"
-
-[[group]]
-[[group.files]]
-bashrc = ".bashrc"
-
-[[group.settings]]
-destination = "/media/wschella/home"

@@ -36,8 +36,14 @@ You can update your config with `dotter add .`, which will ignore files already 
 verbosity = "info"
 destination = "/media/wschella/home"
 
+[settings.sync]
+link = "symlink"
+
 [files]
 "bashrc" = ".bashrc"
 "absolute_file" = "/foo/bar"
 ".hidden_file" = ".absolute_file"
 ```
+
+### Sync
+
