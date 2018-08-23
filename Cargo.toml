@@ -1,0 +1,12 @@
+[package]
+name = "punter"
+version = "0.1.0"
+authors = ["Wout Schellaert <wout.schellaert@gmail.com>"]
+
+[dependencies]
+structopt = "0.2.10"
+failure = "0.1.2"
+dirs = "1.0.3"
+toml = "0.4.6"
+serde_derive = "1.0.72"
+serde = "1.0.72"
